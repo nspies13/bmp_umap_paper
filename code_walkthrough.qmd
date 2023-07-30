@@ -27,9 +27,7 @@ data <- arrow::read_feather("bmp_data") %>% drop_na(any_of(lab_strings_bmp)) %>%
 
 Once we have loaded our data, we will split it into a training set, validation set (for creating the likelihood ratio grid), and testing set.
 
-::: callout-note
-In general, we recommend grouping the data by patient prior to assigning each patient's lab data to one of the training, validation, or testing sets. However, the anonymized data set does not contain patient IDs, so we will proceed without this step.
-:::
+>In general, we recommend grouping the data by patient prior to assigning each patient's lab data to one of the training, validation, or testing sets. However, the anonymized data set does not contain patient IDs, so we will proceed without this step.
 
 ```{r}
 
