@@ -19,8 +19,10 @@ tar_source("R/unsupervised_pipeline.R")
 
 # Download Inputs from FigShare
 download.file("https://figshare.com/ndownloader/files/41764293", "bmp_data")
+download.file("https://figshare.com/ndownloader/files/41764995", "umap_model")
 
 data <- arrow::read_feather("bmp_data") %>% drop_na(any_of(lab_strings_bmp))
+model <- loadRDS()
 ```
 
 Once we have loaded our data, we will split it into a training set, validation set (for creating the likelihood ratio grid), and testing set.
