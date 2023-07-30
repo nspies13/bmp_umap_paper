@@ -1,0 +1,308 @@
+---
+title: "Code Walk-Through"
+author: "Nicholas Spies"
+format: html
+editor: visual
+---
+
+# Code Walk-Through
+
+Science is in the throes of a reproducibility crisis, and machine learning literature is especially vulnerable. In order to reduce the barrier to reviewing, appraising, and reproducing this work, we provide the code, Docker container, and anonymized data necessary to replicate this approach in a public and transparent fashion.
+
+### Preparation
+
+```{r include=FALSE}
+
+library(targets)
+library(tidyverse)
+
+tar_source()
+tar_source("../Helpers/SetGlobals.R")
+tar_source("../Retrospective/R/retrospective_contamination.R")
+tar_source("../Simulation/R/simulate_contamination.R")
+tar_source("../Preprocessing/R/preprocessing.R")
+tar_source("../Supervised/R/assess_models.R")
+
+# Change this to the local path on your computer
+data_path <- "../../Data/UMAP_anon.feather"
+
+# Set the fluids of interest and their compositions
+lab_strings_bmp <- c("sodium", "chloride", "bun", "calcium", "potassium_plas", "co2_totl", "creatinine", "glucose", "anion_gap")
+
+fluids <- setNames(rep(0, length(lab_strings_bmp)), lab_strings_bmp)
+
+NS <- fluids
+NS[c("sodium", "chloride")] <- c(154, 154)
+
+D5NS <- NS
+D5NS["glucose"] <- 5000
+
+LR <- fluids
+LR[c("sodium", "chloride", "potassium_plas", "calcium", "anion_gap")] <- c(130, 109, 4, 5.4, 21)
+
+D5LR <- LR
+D5LR["glucose"] <- 5000
+
+fluids <- list(NS, D5NS, LR, D5LR)
+fluid_names <- c("NS", "D5NS", "LR", "D5LR")
+fluids <- fluids %>% setNames(fluid_names)
+
+data <- arrow::read_feather(data_path) %>% drop_na(any_of(lab_strings_bmp))
+```
+
+Once we have loaded our data, we will split it into a training set, validation set (for creating the likelihood ratio grid), and testing set.
+
+::: callout-note
+In general, we recommend grouping the data by patient prior to assigning each patient's lab data to one of the training, validation, or testing sets. However, the anonymized data set does not contain patient IDs, so we will proceed without this step.
+:::
+
+```{r}
+
+#split <- group_initial_split(data, prop = 0.8, group = patient_id)
+split <- initial_split(data, prop = 0.8)
+
+# Assign a held-out test set for final performance assessment.
+test <- testing(split)
+
+#We'll split the training set further into a training and validation set for the likelihood grid
+train_input <- training(split) %>% initial_split(prop = 0.8)
+train <- training(train_input)
+validation <- testing(train_input)
+
+```
+
+### Simulating IV Fluid Contamination
+
+```{r}
+
+# Perform calculations by row.
+simulateContaminationRow <- function(input, mix_ratio, fluid){
+  
+  cols <- names(fluid)[which(names(fluid) %in% names(input))]
+  
+  output <- input %>%
+    dplyr::mutate(across(all_of(cols), ~(1 - mix_ratio) * . + fluid[cur_column()] * mix_ratio)) %>%
+    select(all_of(cols))
+  
+  # Round output to correct digits for reporting, and re-calculate anion gap.
+  output %>% 
+    mutate(across(c("sodium", "chloride", "co2_totl", "bun", "glucose"), ~round(.))) %>%
+    mutate(across(c("potassium_plas", "calcium"), ~round(., 1))) %>%
+    mutate(creatinine = round(creatinine, 2)) %>% 
+    mutate(anion_gap = sodium - chloride - co2_totl) %>%
+    mutate(mix_ratio = mix_ratio)
+  
+}
+
+# Wrap row-wise simulation across ratios and fluids
+makeFullContaminationTibble <- function(input, mix_ratios, fluid, fluid_name){
+  
+  input_prep = 
+    input %>% drop_na(any_of(lab_strings)) %>%
+      slice_sample(n = length(mix_ratios), replace = T) %>% 
+      mutate(across(any_of(lab_strings), ~.x, .names = "{col}_real"), mix_ratio = mix_ratios, label = fluid_name)
+  
+  tmp = simulateContaminationRow(input_prep, input_prep$mix_ratio, fluid)
+  
+  input_prep[,names(tmp)] <- tmp
+  
+  input_prep %>% 
+    mutate(label = fluid_name)
+  
+}
+
+ratios <- rep(seq(0.01, 1, by = 0.01), each = 10000)
+contam_sim <- map2(fluids, fluid_names, ~makeFullContaminationTibble(train, mix_ratios = ratios, fluid = .x, fluid_name = .y)) %>% bind_rows()
+
+contam_sim %>% slice_sample(n = 10)
+```
+
+### Building the Unsupervised Models
+
+We recommend tuning the many hyperparameters of the UMAP model and the bandwidth of the kernel density estimation to optimize the positive predictive value and alarm rate for your own data, but we will proceed with the only set of hyperparameters used in the paper for simplicity. We will add some pre-processing steps in the form of a tidymodels recipe, but this can also be done directly by calling uwot::umap().
+
+```{r}
+
+library(tidymodels)
+library(embed)
+
+## Hyperparameters used in paper. Tune these to your liking. Anecdotally, n_neighbors and dens_scale provided the most substantial changes on the embeddings. However, the likelihood ratio approach is relatively robust to variation in the underlying embedding, provided you can simulate the error in question.
+neighbors <- 50
+metric <- "cosine"
+min_dist <- 0
+init <- "spca"
+bandwidth <- 10
+connectivity <- 10
+set_op_mix_ratio <- 1
+dens_scale <- 1
+
+# Uncomment this to train your own models.
+  # results_umap_rec <-     
+  #   recipe(train %>% drop_na(any_of(!!lab_strings_bmp)) %>% bind_rows(contam_sim %>% slice_sample(prop = 0.25, by = c(label, mix_ratio)))) %>%
+  #     update_role(everything(), new_role = "metadata") %>%
+  #     update_role_requirements("metadata", bake = F) %>%
+  #     update_role(any_of(c(!!!lab_strings)), new_role = "predictor") %>%
+  #     step_normalize(all_predictors()) %>%
+  #     embed::step_umap(any_of(c(!!!lab_strings_bmp)), keep_original_cols = F, metric = metric, num_comp = 2, neighbors = neighbors, min_dist = min_dist, 
+  #                      options = list(bandwidth = bandwidth, local_connectivity = connectivity, init = init, set_op_mix_ratio = set_op_mix_ratio, dens_scale = dens_scale, fast_sgd = F, n_threads = 32, n_sgd_threads = 32, tmpdir = "/scratch1/fs1/zaydmanm/nspies/umap/", ret_model = T, verbose = F)) %>% 
+  #   prep() 
+ 
+  # Because training these models is resource intensive, its worth saving them at each iteration. 
+  #pins::pin_write(model_board, results_umap_rec %>% bundle::unbundle(), name = "BMP_UMAP_model", versioned = T)
+  
+  
+  #results_umap_rec
+```
+
+### Applying the Models
+
+Once we've built our models, we can apply them to new data using the code below.
+
+```{r}
+
+### Load the model.
+  model <- pins::pin_read(model_board, "UMAP_ClinChem_final") %>% pluck("model") %>% bundle::unbundle()
+
+### Apply Models to Simulated Contamination, Validation and Test Sets #####
+
+  validation_umap <- bake(model, validation %>% drop_na(any_of(lab_strings_bmp)))
+  test_umap <- bake(model, test %>% drop_na(any_of(lab_strings_bmp)))
+  sim_umap <- bake(model, contam_sim %>% drop_na(any_of(lab_strings_bmp)) %>% slice_sample(n = 100, by = c(label, mix_ratio)))
+  
+  validation_umap
+```
+
+### Calculating Likelihood Ratios
+
+Now that we have our embedding coordinates for our validation set and simulated contamination, we can calculate likelihood ratios for a grid of coordinates.
+
+```{r}
+makeEnrichmentGrid <- function(real_embed, sim){
+  
+  library(KernSmooth)
+  
+  kde_input <- 
+    bind_rows(
+      D5NS = sim %>% filter(mix_ratio > 0.05 & mix_ratio < 0.95 & label == "D5NS"), 
+      D5LR = sim %>% filter(mix_ratio > 0.05 & mix_ratio < 0.95 & label == "D5LR"),
+      NS = sim %>% filter(mix_ratio > 0.05 & mix_ratio < 0.95 & label == "NS"),
+      LR = sim %>% filter(mix_ratio > 0.05 & mix_ratio < 0.95 & label == "LR"))
+  
+  uncontam_real <- real_embed %>% filter(!contam_comment) %>% drop_na() %>% slice_sample(n = nrow(kde_input), replace = T)
+  
+  min_x <- min(c(kde_input$UMAP1, uncontam_real$UMAP1), na.rm = T)
+  max_x <- max(c(kde_input$UMAP1, uncontam_real$UMAP1), na.rm = T)
+  
+  min_y <- min(c(kde_input$UMAP2, uncontam_real$UMAP2), na.rm = T)
+  max_y <- max(c(kde_input$UMAP2, uncontam_real$UMAP2), na.rm = T)
+  
+  kde_uncontam <- 
+    bkde2D(
+      uncontam_real %>% select(UMAP1, UMAP2) %>% as.matrix(), 
+      bandwidth = 0.25, 
+      gridsize = c(1000, 1000),
+      range.x = list(c(min_x, max_x), c(min_y, max_y)))
+  
+  kde_contam <- 
+    bkde2D(
+      kde_input %>% select(UMAP1, UMAP2) %>% as.matrix(), 
+      bandwidth = 0.5, 
+      gridsize = c(1000, 1000),
+      range.x = list(c(min_x, max_x), c(min_y, max_y)))
+  
+  grid <- kde_contam
+  grid$fhat <- (kde_contam$fhat + 1e-20)/(kde_uncontam$fhat + 1e-20)
+  
+  grid
+  
+}
+
+grid <- makeEnrichmentGrid(validation_umap, sim_umap)
+
+assignEnrichmentScores <- function(input, grid = likelihood_ratio_grid){
+  
+  bin_x <- cut(input$UMAP1, breaks = grid$x1, right = F) %>% as.numeric
+  bin_y <- cut(input$UMAP2, breaks = grid$x2, right = F) %>% as.numeric
+  
+  enrichment <- map2(bin_x, bin_y, ~grid[["fhat"]][.x, .y]) %>% unlist()
+  
+  input$likelihood_ratio <- enrichment
+  
+  input
+  
+}
+
+sim_ratio <- assignEnrichmentScores(sim_umap, grid) %>% drop_na()
+test_ratio <- assignEnrichmentScores(test_umap, grid) %>% drop_na()
+```
+
+### Plotting the Embeddings
+
+```{r}
+
+theme_quad <- 
+    theme(title = element_text(size = 14, face = "bold.italic", hjust = 0.5), axis.line = element_line(), axis.ticks = element_blank(), panel.grid = element_blank(), panel.background = element_blank(),
+          legend.position = c(0.15, 0.1), legend.key = element_blank(), legend.background = element_blank(), axis.title = element_blank(), axis.title.x.bottom = element_text(size = 12, face = "bold.italic"), axis.title.y.left = element_blank(), axis.text = element_blank())
+  
+  theme_set(theme_quad)
+  
+  x1 <- quantile(test_ratio$UMAP1, probs = c(0.0001, 0.9999))
+  y1 <- quantile(test_ratio$UMAP2, probs = c(0.0001, 0.9999))
+  cap1 <- quantile(test_ratio$likelihood_ratio, probs = c(0.99995), na.rm = T)[[1]]
+  
+  test_overlay <- test_ratio %>% mutate(likelihood_ratio = ifelse(likelihood_ratio > cap1, cap1, likelihood_ratio))
+                                  
+  gg_test_ratio <- 
+    ggplot(test_overlay, aes(UMAP1, UMAP2, fill = likelihood_ratio, alpha = likelihood_ratio)) + 
+      geom_point(color = "grey50", size = 3, stroke = 0.1, shape = 21) +
+#      scale_alpha_continuous() +
+      scico::scale_fill_scico(direction = 1, palette = "grayC", trans = scales::log1p_trans(), limits = c(0, cap1), breaks = c(0, cap1), labels = c("Lowest", "Highest")) +
+      guides(fill = guide_colorbar(title = "Likelihood Ratio", direction = "horizontal", title.position = "top", ticks = F, title.theme = element_text(size = 10, face = "bold", hjust = 0.5), label.theme = element_text(size = 8))) +
+      ggtitle("Patient Embedding")
+  ggsave(paste0(out_dir, "/test_set_likelihood_ratio_embedding.png"), gg_test_ratio, width = 8.5, height = 6, dpi = 600)
+  ggsave(paste0(out_dir, "/test_set_likelihood_ratio_embedding.pdf"), gg_test_ratio, width = 8.5, height = 6)
+  ggsave(paste0(out_dir, "/test_set_likelihood_ratio_embedding.svg"), gg_test_ratio, width = 8.5, height = 6)
+
+```
+
+### Plotting Simulated Contamination
+
+```{r}
+
+  x2 <- quantile(sim_ratio %>% filter(mix_ratio < 0.9) %>% pluck("UMAP1"), probs = c(0.00001, 0.99999))
+  y2 <- quantile(sim_ratio %>% filter(mix_ratio < 0.9) %>% pluck("UMAP2"), probs = c(0.00001, 0.99999))
+  cap2 <- quantile(sim_ratio %>% filter(mix_ratio < 0.75) %>% pluck("likelihood_ratio"), probs = c(0.95), na.rm = T)[[1]]
+  
+  gg_sim_ratio <- 
+    list(
+      ggplot() + 
+        geom_point(data = sim_ratio %>% group_by(label, mix_ratio) %>% slice_sample(prop = 0.1) %>% mutate(likelihood_ratio = ifelse(likelihood_ratio > cap2, cap2, likelihood_ratio)), 
+                   aes(UMAP1, UMAP2, color = label), size = 4, shape = 20, stroke = 0, alpha = 0.25) +
+        scale_color_manual(values = color_map_global) +
+        guides(alpha = F, color = guide_legend(title = "Fluid", direction = "horizontal", title.position = "top", reverse = T,
+                                    ticks = F, title.theme = element_text(size = 10, face = "bold", hjust = 0.5), nrow = 2,  
+                                    label.theme = element_text(size = 8, face = "bold"), override.aes = list(size = 8, alpha = 1, stroke = 1, shape = 21))) +
+        ggtitle("Fluid Types") +
+        theme(axis.title.y.left = element_text(size = 12, face = "bold.italic")),
+      ggplot() + 
+        geom_point(data = sim_ratio %>% group_by(label, mix_ratio) %>% slice_sample(prop = 0.1) %>% mutate(likelihood_ratio = ifelse(likelihood_ratio > cap2, cap2, likelihood_ratio)), 
+                   aes(UMAP1, UMAP2, color = mix_ratio), size = 4, shape = 20, stroke = 0, alpha = 0.75) +
+        scico::scale_color_scico(direction = -1, end = 0.95, palette = "davos", breaks = c(0, 1), limits = c(0, 1), labels = c(0, 1)) +
+        ggtitle("Contamination Severity") +
+        guides(color = guide_colorbar(title = "Mixture Ratio", direction = "horizontal", title.position = "top", ticks = F, 
+                                      title.theme = element_text(size = 10, face = "bold", hjust = 0.5),
+                                      label.theme = element_text(size = 8, face = "bold", hjust = 0)), 
+               fill = F), 
+      ggplot() + 
+        geom_point(data = sim_ratio %>% group_by(label, mix_ratio) %>% slice_sample(prop = 0.1) %>% mutate(likelihood_ratio = ifelse(likelihood_ratio > cap2, cap2, likelihood_ratio)), 
+                   aes(UMAP1, UMAP2, color = likelihood_ratio), size = 4, shape = 20, stroke = 0, alpha = 0.75) +
+        scico::scale_color_scico(direction = 1, begin = 0.05, palette = "bilbao", trans = scales::log1p_trans(), oob = scales::squish, limits = c(0, cap1*2), breaks = c(0, cap1*2), labels = c("Lowest", "Highest")) + 
+        ggtitle("Likelihood Ratio") +
+        guides(fill = F, color = guide_colorbar(title = "Likelihood Ratio", direction = "horizontal", title.position = "top", ticks = F, 
+                                                title.theme = element_text(size = 10, face = "bold", hjust = 0.5),
+                                                label.theme = element_text(size = 8, face = "bold", hjust = 0))))
+    gg_sim_overlay <- ggpubr::ggarrange(plotlist = gg_sim_ratio, nrow = 1, ncol = 3)
+    ggsave(paste0(out_dir, "/sim_set_likelihood_ratio_embedding_grid.pdf"), gg_sim_overlay, width = 16, height = 5)
+    ggsave(paste0(out_dir, "/sim_set_likelihood_ratio_embedding_grid.svg"), gg_sim_overlay, width = 16, height = 5)
+    ggsave(paste0(out_dir, "/sim_set_likelihood_ratio_embedding_grid.png"), gg_sim_overlay, width = 16, height = 5, dpi = 600)
+```
