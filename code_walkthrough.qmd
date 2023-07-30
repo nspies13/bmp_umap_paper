@@ -17,10 +17,10 @@ library(tidyverse)
 tar_source("R/SetGlobals.R")
 tar_source("R/unsupervised_pipeline.R")
 
-# Change this to the local path on your computer
-data_path <- "../../Data/UMAP_anon.feather"
+# Download Inputs from FigShare
+download.file("https://figshare.com/ndownloader/files/41764293", "bmp_data")
 
-data <- arrow::read_feather(data_path) %>% drop_na(any_of(lab_strings_bmp))
+data <- arrow::read_feather("bmp_data") %>% drop_na(any_of(lab_strings_bmp))
 ```
 
 Once we have loaded our data, we will split it into a training set, validation set (for creating the likelihood ratio grid), and testing set.
