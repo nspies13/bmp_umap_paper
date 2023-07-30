@@ -5,6 +5,8 @@ format: gfm
 editor: visual
 ---
 
+# Code Walk-Through
+
 Science is in the throes of a reproducibility crisis, and machine learning literature is especially vulnerable. In order to reduce the barrier to reviewing, appraising, and reproducing this work, we provide the code, Docker container, and anonymized data necessary to replicate this approach in a public and transparent fashion.
 
 ### Preparation
