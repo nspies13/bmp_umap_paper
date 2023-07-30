@@ -1,51 +1,24 @@
 ---
 title: "Code Walk-Through"
-author: "Nicholas Spies"
+author: "Nicholas Spies, MD"
 format: html
 editor: visual
 ---
-
-# Code Walk-Through
 
 Science is in the throes of a reproducibility crisis, and machine learning literature is especially vulnerable. In order to reduce the barrier to reviewing, appraising, and reproducing this work, we provide the code, Docker container, and anonymized data necessary to replicate this approach in a public and transparent fashion.
 
 ### Preparation
 
-```{r include=FALSE}
+```{r include=FALSE, echo=FALSE}
 
 library(targets)
 library(tidyverse)
 
-tar_source()
-tar_source("../Helpers/SetGlobals.R")
-tar_source("../Retrospective/R/retrospective_contamination.R")
-tar_source("../Simulation/R/simulate_contamination.R")
-tar_source("../Preprocessing/R/preprocessing.R")
-tar_source("../Supervised/R/assess_models.R")
+tar_source("R/SetGlobals.R")
+tar_source("R/unsupervised_pipeline.R")
 
 # Change this to the local path on your computer
 data_path <- "../../Data/UMAP_anon.feather"
-
-# Set the fluids of interest and their compositions
-lab_strings_bmp <- c("sodium", "chloride", "bun", "calcium", "potassium_plas", "co2_totl", "creatinine", "glucose", "anion_gap")
-
-fluids <- setNames(rep(0, length(lab_strings_bmp)), lab_strings_bmp)
-
-NS <- fluids
-NS[c("sodium", "chloride")] <- c(154, 154)
-
-D5NS <- NS
-D5NS["glucose"] <- 5000
-
-LR <- fluids
-LR[c("sodium", "chloride", "potassium_plas", "calcium", "anion_gap")] <- c(130, 109, 4, 5.4, 21)
-
-D5LR <- LR
-D5LR["glucose"] <- 5000
-
-fluids <- list(NS, D5NS, LR, D5LR)
-fluid_names <- c("NS", "D5NS", "LR", "D5LR")
-fluids <- fluids %>% setNames(fluid_names)
 
 data <- arrow::read_feather(data_path) %>% drop_na(any_of(lab_strings_bmp))
 ```

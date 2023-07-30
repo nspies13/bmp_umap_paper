@@ -2,11 +2,7 @@
 local({
 
   # the requested version of renv
-<<<<<<< HEAD
   version <- "0.17.3"
-=======
-  version <- "0.16.0"
->>>>>>> main/main
 
   # the project directory
   project <- getwd()
@@ -67,13 +63,10 @@ local({
     if (is.environment(x) || length(x)) x else y
   }
   
-<<<<<<< HEAD
   `%??%` <- function(x, y) {
     if (is.null(x)) y else x
   }
   
-=======
->>>>>>> main/main
   bootstrap <- function(version, library) {
   
     # attempt to download renv
@@ -94,7 +87,6 @@ local({
   
   renv_bootstrap_repos <- function() {
   
-<<<<<<< HEAD
     # get CRAN repository
     cran <- getOption("renv.repos.cran", "https://cloud.r-project.org")
   
@@ -111,42 +103,23 @@ local({
   
     }
   
-=======
-    # check for repos override
-    repos <- Sys.getenv("RENV_CONFIG_REPOS_OVERRIDE", unset = NA)
-    if (!is.na(repos))
-      return(repos)
-  
->>>>>>> main/main
     # check for lockfile repositories
     repos <- tryCatch(renv_bootstrap_repos_lockfile(), error = identity)
     if (!inherits(repos, "error") && length(repos))
       return(repos)
   
     # if we're testing, re-use the test repositories
-<<<<<<< HEAD
     if (renv_bootstrap_tests_running()) {
       repos <- getOption("renv.tests.repos")
       if (!is.null(repos))
         return(repos)
     }
-=======
-    if (renv_bootstrap_tests_running())
-      return(getOption("renv.tests.repos"))
->>>>>>> main/main
   
     # retrieve current repos
     repos <- getOption("repos")
   
     # ensure @CRAN@ entries are resolved
-<<<<<<< HEAD
     repos[repos == "@CRAN@"] <- cran
-=======
-    repos[repos == "@CRAN@"] <- getOption(
-      "renv.repos.cran",
-      "https://cloud.r-project.org"
-    )
->>>>>>> main/main
   
     # add in renv.bootstrap.repos if set
     default <- c(FALLBACK = "https://cloud.r-project.org")
@@ -386,12 +359,7 @@ local({
       return()
   
     # allow directories
-<<<<<<< HEAD
     if (dir.exists(tarball)) {
-=======
-    info <- file.info(tarball, extra_cols = FALSE)
-    if (identical(info$isdir, TRUE)) {
->>>>>>> main/main
       name <- sprintf("renv_%s.tar.gz", version)
       tarball <- file.path(tarball, name)
     }
@@ -705,13 +673,8 @@ local({
     if (version == loadedversion)
       return(TRUE)
   
-<<<<<<< HEAD
     # assume four-component versions are from GitHub;
     # three-component versions are from CRAN
-=======
-    # assume four-component versions are from GitHub; three-component
-    # versions are from CRAN
->>>>>>> main/main
     components <- strsplit(loadedversion, "[.-]")[[1]]
     remote <- if (length(components) == 4L)
       paste("rstudio/renv", loadedversion, sep = "@")
@@ -751,15 +714,12 @@ local({
     # warn if the version of renv loaded does not match
     renv_bootstrap_validate_version(version)
   
-<<<<<<< HEAD
     # execute renv load hooks, if any
     hooks <- getHook("renv::autoload")
     for (hook in hooks)
       if (is.function(hook))
         tryCatch(hook(), error = warning)
   
-=======
->>>>>>> main/main
     # load the project
     renv::load(project)
   
@@ -902,7 +862,6 @@ local({
   
   renv_json_read <- function(file = NULL, text = NULL) {
   
-<<<<<<< HEAD
     jlerr <- NULL
   
     # if jsonlite is loaded, use that instead
@@ -926,13 +885,6 @@ local({
       stop(jlerr)
     else
       stop(json)
-=======
-    # if jsonlite is loaded, use that instead
-    if ("jsonlite" %in% loadedNamespaces())
-      renv_json_read_jsonlite(file, text)
-    else
-      renv_json_read_default(file, text)
->>>>>>> main/main
   
   }
   
